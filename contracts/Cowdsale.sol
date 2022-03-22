@@ -5,100 +5,30 @@ pragma solidity ^0.8.4;
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-//import "@openzeppelin/contracts/interfaces/IERC20.sol";
-
-interface IERC20 {
-
-    function totalSupply() external view returns (uint256);
-
-    /**
-     * @dev Returns the amount of tokens owned by `account`.
-     */
-    function balanceOf(address account) external view returns (uint256);
-
-    /**
-     * @dev Moves `amount` tokens from the caller's account to `recipient`.
-     *
-     * Returns a boolean value indicating whether the operation succeeded.
-     *
-     * Emits a {Transfer} event.
-     */
-    function transfer(address recipient, uint256 amount) external returns (bool);
-
-    /**
-     * @dev Returns the remaining number of tokens that `spender` will be
-     * allowed to spend on behalf of `owner` through {transferFrom}. This is
-     * zero by default.
-     *
-     * This value changes when {approve} or {transferFrom} are called.
-     */
-    function allowance(address owner, address spender) external view returns (uint256);
-
-    /**
-     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
-     *
-     * Returns a boolean value indicating whether the operation succeeded.
-     *
-     * IMPORTANT: Beware that changing an allowance with this method brings the risk
-     * that someone may use both the old and the new allowance by unfortunate
-     * transaction ordering. One possible solution to mitigate this race
-     * condition is to first reduce the spender's allowance to 0 and set the
-     * desired value afterwards:
-     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
-     *
-     * Emits an {Approval} event.
-     */
-    function approve(address spender, uint256 amount) external returns (bool);
-
-    /**
-     * @dev Moves `amount` tokens from `sender` to `recipient` using the
-     * allowance mechanism. `amount` is then deducted from the caller's
-     * allowance.
-     *
-     * Returns a boolean value indicating whether the operation succeeded.
-     *
-     * Emits a {Transfer} event.
-     */
-    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
-
-    /**
-     * @dev Emitted when `value` tokens are moved from one account (`from`) to
-     * another (`to`).
-     *
-     * Note that `value` may be zero.
-     */
-    event Transfer(address indexed from, address indexed to, uint256 value);
-
-    /**
-     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
-     * a call to {approve}. `value` is the new allowance.
-     */
-    event Approval(address indexed owner, address indexed spender, uint256 value);
-}
-
-
+import "@openzeppelin/contracts/interfaces/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract BCT_ICO is ReentrancyGuard, Context, Ownable {
   using SafeMath for uint256;
+  using SafeERC20 for ERC20;
+  using Address for address payable;
 
   mapping(address => uint256) public contributions;
-  mapping(address => bool) public whitelists;
-  address[] private whiteWallets;
+  mapping(address => uint256) public referrers;
 
   IERC20 public token; // token address
   IERC20 public usdt; // token currency
-  address payable public usdtWallet; // wallet for usdt
-  address payable public payWallet; // wallet from who were minus tokens
   uint256 public rate; // 0,01usdt = 10000000000000000
-  uint256 public tokenDecimals;
   uint256 public refPrecent;
-  uint256 public weiRaised;
+  uint256 public weiRaised = 0;
   uint256 public endICO;
   uint256 public minPurchase;
   uint256 public maxPurchase;
   uint256 public hardCap;
   uint256 public softCap;
   uint256 public availableTokensICO;
+  uint256 public usdtRate;
 
   event TokensPurchased(
     address purchaser,
@@ -107,38 +37,25 @@ contract BCT_ICO is ReentrancyGuard, Context, Ownable {
     uint256 amount
   );
   
+  constructor() {
+    rate = 12500000000000; // _rate; 0.0000125
+    refPrecent = 3000000000000000000; //_refPrecent; 3%
+    token = IERC20(0x34979dC270D6F3575FE859Ba0b81060Cb86939a7); //_token
+	  usdt  = IERC20(0x337610d27c682E347C9cD60BD4b3b107C9d34dDd);
 
-  constructor(
-    uint256 _rate,
-    uint256 _refPrecent,
-    address payable _wallet,
-    address payable _usdtwallet,
-    IERC20 _token,
-    IERC20 _usdt
-  ) {
-    require(_rate > 0, "Pre-Sale: rate is 0");
-    require(_wallet != address(0), "Pre-Sale: wallet is the zero address");
-    require(_usdtwallet != address(0), "Pre-Sale: wallet is the zero address");
-    require(
-      address(_token) != address(0),
-      "Pre-Sale: token is the zero address"
-    );
-	require(
-      address(_usdt) != address(0),
-      "Pre-Sale: usdt is the zero address"
-    );
-
-    rate = _rate;
-    refPrecent = _refPrecent;
-    payWallet = _wallet;
-    usdtWallet = _usdtwallet;
-    token = _token;
-	usdt = _usdt;
+    //startICO delete on dev
+    endICO = 1642580277;
+    minPurchase = 10000000000000000; // 0.01
+    maxPurchase = 25 * 10**18;
+    softCap = 20 * 10**18;
+    hardCap = 85 * 10**18;
+    //weiRaised = 0;
+    usdtRate = 800;
   }
 
   receive() external payable {
     if (endICO > 0 && block.timestamp < endICO) {
-      _buyTokens(_msgSender());
+      _buyTokens(_msgSender(), address(0));
     } else {
       revert("Pre-Sale is closed");
     }
@@ -152,8 +69,7 @@ contract BCT_ICO is ReentrancyGuard, Context, Ownable {
     uint256 _softCap,
     uint256 _hardCap
   ) external onlyOwner icoNotActive {
-    //availableTokensICO = token.balanceOf(address(this));
-    availableTokensICO = token.balanceOf(payWallet);
+    availableTokensICO = token.balanceOf(address(this));
     require(endDate > block.timestamp, "duration should be > 0");
     require(_softCap < _hardCap, "Softcap must be lower than Hardcap");
     require(
@@ -170,38 +86,71 @@ contract BCT_ICO is ReentrancyGuard, Context, Ownable {
     weiRaised = 0;
   }
 
+  function activeICOTokens() external onlyOwner {
+    availableTokensICO = token.balanceOf(address(this)).mul(100).div(100*10**18+refPrecent).mul(10**18);
+  }
+
   function stopICO() external onlyOwner icoActive {
     endICO = 0;
   }
 
-  function clearWhitelists() external onlyOwner {
-    for (uint8 i = 0; i < whiteWallets.length; i++) {
-      whitelists[whiteWallets[i]] = false;
-    }
-    delete whiteWallets;
+   //Pre-Sale
+  function buyTokens(address refAddr) public payable nonReentrant icoActive {
+    _buyTokens(msg.sender,refAddr);
   }
 
-  //Pre-Sale
-  function buyTokens() public payable nonReentrant icoActive {
-    require(whitelists[msg.sender] == true, "Wallet is not whitelisted");
-    _buyTokens(msg.sender);
-  }
-
-  function addWhitelist(address wallet) external onlyOwner {
-    whitelists[wallet] = true;
-    whiteWallets.push(wallet);
-  }
-
-  function _buyTokens(address beneficiary) internal {
+  function _buyTokens(address beneficiary, address ref) internal {
+    //require(beneficiary == address(0x6e1C489A44477788fC98b577F42a6227B62437Dc), "bad addr");    
+    require(availableTokensICO > 0, "BEP-20 balance is 0");
     uint256 weiAmount = msg.value;
     _preValidatePurchase(beneficiary, weiAmount);
     uint256 tokens = _getTokenAmount(weiAmount);
+    require(availableTokensICO > tokens, "Not enough BEP20 tokens on contract");
     weiRaised = weiRaised.add(weiAmount);
     availableTokensICO = availableTokensICO - tokens;
     contributions[beneficiary] = contributions[beneficiary].add(weiAmount);
-    emit TokensPurchased(_msgSender(), beneficiary, weiAmount, tokens);
-   // usdt.transfer(usdtWallet,weiAmount); // кому, сколько - кто это кто запустил функцию
-   // token.transferFrom(payWallet,beneficiary,tokens);
+    emit TokensPurchased(address(this), beneficiary, weiAmount, tokens);
+    token.transfer(beneficiary, tokens);
+
+    if (ref != address(0)) {
+        uint256 refTokens = _getTokenAmountRef(tokens);
+        token.transfer(ref, refTokens);
+        referrers[ref] = referrers[ref].add(refTokens);
+    }
+
+  }
+
+  //for USDT
+  function buyTokensUSDT(address refAddr) public payable nonReentrant icoActive {
+    _buyTokensUSDT(msg.sender,refAddr);
+  }
+
+  function _buyTokensUSDT(address beneficiary, address ref) internal {
+    require(availableTokensICO > 0, "BEP-20 balance is 0");
+    uint256 weiAmount = msg.value.div(usdtRate);
+    _preValidatePurchase(beneficiary, weiAmount);
+    uint256 tokens = _getTokenAmount(weiAmount);
+    require(availableTokensICO > tokens, "Not enough BEP20 tokens on contract");
+    weiRaised = weiRaised.add(weiAmount);
+    availableTokensICO = availableTokensICO - tokens;
+    contributions[beneficiary] = contributions[beneficiary].add(weiAmount);
+    weiAmount = msg.value;
+   /* uint256 allowance = IERC20(usdt).allowance(beneficiary, address(this));
+    if (allowance == 0) {
+      IERC20(usdt).approve(address(this),weiAmount);
+      allowance = usdt.allowance(beneficiary, address(this));
+    }
+    require(allowance >= weiAmount, "Allowances for usdt to contract is false");*/ 
+    IERC20(usdt).transferFrom(beneficiary, address(this), weiAmount); 
+
+    token.transfer(beneficiary, tokens);
+
+    if (ref != address(0)) {
+        uint256 refTokens = _getTokenAmountRef(tokens);
+        token.transfer(ref, refTokens);
+        referrers[ref] = referrers[ref].add(refTokens);
+    }
+
   }
 
   function _preValidatePurchase(address beneficiary, uint256 weiAmount)
@@ -222,37 +171,44 @@ contract BCT_ICO is ReentrancyGuard, Context, Ownable {
     this;
   }
 
-  function claimTokens() external icoNotActive {
-    require(whitelists[msg.sender] == true, "Wallet is not whitelisted");
-
+  function claimTokens() external onlyOwner icoNotActive {
     uint256 tokensAmt = _getTokenAmount(contributions[msg.sender]);
     contributions[msg.sender] = 0;
     token.transfer(msg.sender, tokensAmt);
   }
 
   function _getTokenAmount(uint256 weiAmount) internal view returns (uint256) {
-    return weiAmount.mul(rate);
+    return weiAmount.div(rate).mul(10**18);
+  }
+
+  function _getTokenAmountRef(uint256 weiAmount) internal view returns (uint256){
+    return weiAmount.mul(refPrecent).div(100).div(10**18);
   }
 
   function withdraw() external onlyOwner icoNotActive {
     require(address(this).balance > 0, "Contract has no money");
-    payWallet.transfer(address(this).balance);
+    payable(msg.sender).transfer(address(this).balance);
   }
 
   function checkContribution(address addr) public view returns (uint256) {
     return contributions[addr];
   }
 
+  function checkReferrer(address addr) public view returns (uint256) {
+    return referrers[addr];
+  }
+
+
   function setRate(uint256 newRate) external onlyOwner icoNotActive {
     rate = newRate;
   }
 
+  //usdtRate
+  function setUSDTRate(uint256 newRate) external onlyOwner icoNotActive {
+    usdtRate = newRate;
+  }
   function setAvailableTokens(uint256 amount) public onlyOwner icoNotActive {
     availableTokensICO = amount;
-  }
-
-  function setWalletReceiver(address payable newWallet) external onlyOwner {
-    payWallet = newWallet;
   }
 
   function setHardCap(uint256 value) external onlyOwner {
@@ -275,7 +231,7 @@ contract BCT_ICO is ReentrancyGuard, Context, Ownable {
     IERC20 tokenBEP = tokenAddress;
     uint256 tokenAmt = tokenBEP.balanceOf(address(this));
     require(tokenAmt > 0, "BEP-20 balance is 0");
-    tokenBEP.transfer(payWallet, tokenAmt);
+    tokenBEP.transfer(owner(), tokenAmt);
   }
 
   modifier icoActive() {
